@@ -13,6 +13,8 @@ package io.vertx.tracing.opentelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import io.opentelemetry.context.propagation.TextMapPropagator;
 import io.opentelemetry.context.propagation.TextMapSetter;
 import io.opentelemetry.sdk.testing.junit5.OpenTelemetryExtension;
@@ -42,12 +44,14 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.contentOf;
 import static org.awaitility.Awaitility.await;
 
 
@@ -202,15 +206,24 @@ public class OpenTelemetryIntegrationTest {
 
     ctx.assertComplete(
       vertx.createHttpServer(new HttpServerOptions().setTracingPolicy(TracingPolicy.ALWAYS)).requestHandler(req -> {
-        HttpClient client = vertx.createHttpClient(new HttpClientOptions().setTracingPolicy(TracingPolicy.PROPAGATE));
-        List<Future> futures = new ArrayList<>();
-        for (int i = 0;i < num;i++) {
-          futures.add(client.request(new RequestOptions().setPort(8081).setHost("localhost"))
-            .compose(HttpClientRequest::send).compose(HttpClientResponse::body));
-        }
-        CompositeFuture.all(futures).onComplete(ctx.succeeding(v -> {
-          req.response().end();
-        }));
+        Context context = VertxContextStorageProvider.VertxContextStorage.INSTANCE.current();
+        CompletableFuture.runAsync(() -> {
+
+          Scope scope = VertxContextStorageProvider.VertxContextStorage.INSTANCE.attach(context);
+          try {
+            HttpClient client = vertx.createHttpClient(new HttpClientOptions().setTracingPolicy(TracingPolicy.PROPAGATE));
+            List<Future> futures = new ArrayList<>();
+            for (int i = 0;i < num;i++) {
+              futures.add(client.request(new RequestOptions().setPort(8081).setHost("localhost"))
+                .compose(HttpClientRequest::send).compose(HttpClientResponse::body));
+            }
+            CompositeFuture.all(futures).onComplete(ctx.succeeding(v -> {
+              req.response().end();
+            }));
+          } finally {
+             scope.close();
+          }
+        }).join();
       }).listen(8080).onSuccess(v -> latch.countDown())
     );
 
